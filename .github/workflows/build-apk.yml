@@ -17,11 +17,45 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Decode Release Keystore
+      - name: Decode and Verify Release Keystore
         env:
           KEY: ${{ secrets.KEY }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
         run: |
-          printf '%s' "$KEY" | grep -v '^-' | tr -d '\r\n ' | base64 -d > app/jrweb-release.jks
+          python3 - << 'EOF'
+          import os, base64, re, sys
+
+          raw = os.environ.get("KEY", "")
+          if not raw.strip():
+              print("ERROR: Secret KEY is empty!")
+              sys.exit(1)
+
+          lines = [l for l in raw.splitlines() if not l.strip().startswith("-----")]
+          b64 = re.sub(r"\s+", "", "".join(lines))
+          b64 += "=" * (-len(b64) % 4)
+          data = base64.b64decode(b64)
+
+          if data.startswith(b"\xef\xbb\xbf"):
+              data = data[3:]
+
+          if not (data.startswith(b"\xfe\xed\xfe\xed") or data.startswith(b"\x30\x82")):
+              try:
+                  text = data.decode("utf-8", errors="ignore")
+                  lines2 = [l for l in text.splitlines() if not l.strip().startswith("-----")]
+                  b64_2 = re.sub(r"\s+", "", "".join(lines2))
+                  b64_2 += "=" * (-len(b64_2) % 4)
+                  data2 = base64.b64decode(b64_2)
+                  if data2.startswith(b"\xfe\xed\xfe\xed") or data2.startswith(b"\x30\x82"):
+                      data = data2
+              except Exception:
+                  pass
+
+          with open("app/jrweb-release.jks", "wb") as f:
+              f.write(data)
+
+          print("Keystore size:", len(data), "bytes | Header:", data[:4].hex())
+          EOF
+          keytool -list -keystore app/jrweb-release.jks -storepass "${KEYSTORE_PASS:-jrweb123456}"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
